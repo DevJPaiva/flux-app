@@ -1,0 +1,10 @@
+{
+  "description": "Gerencie gastos, cartões, orçamento e metas financeiras em um app intuitivo; no plano Plus, use IA para analisar faturas e esclarecer seus dados.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
