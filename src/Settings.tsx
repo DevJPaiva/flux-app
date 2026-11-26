@@ -1,24 +1,100 @@
-import { useState, type FormEvent } from 'react'
+import { useRef, useState, type ChangeEvent, type FormEvent } from 'react'
 import type { FinanceData, Theme } from './finance'
-import { Icon, PageHeader } from './ui'
+import { Avatar, Icon, PageHeader } from './ui'
 
 type Profile = FinanceData['profile']
 
-export default function Settings({ profile, hideOnOpen, theme, onBack, onChangeTheme, onSaveProfile, onToggleBalance, onLogout, onDeleteAccount }: {
+async function cropSquareAvatar(file: File): Promise<{ blob: Blob; dataUrl: string }> {
+  const bitmap = await createImageBitmap(file)
+  const size = Math.min(bitmap.width, bitmap.height)
+  const sx = Math.floor((bitmap.width - size) / 2)
+  const sy = Math.floor((bitmap.height - size) / 2)
+  const target = 512
+  const canvas = document.createElement('canvas')
+  canvas.width = target
+  canvas.height = target
+  const ctx = canvas.getContext('2d')
+  if (!ctx) throw new Error('Canvas indisponível')
+  ctx.drawImage(bitmap, sx, sy, size, size, 0, 0, target, target)
+  bitmap.close()
+  const dataUrl = canvas.toDataURL('image/jpeg', 0.88)
+  const blob = await new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('Falha ao gerar imagem'))), 'image/jpeg', 0.88)
+  })
+  return { blob, dataUrl }
+}
+
+export default function Settings({
+  profile,
+  hideOnOpen,
+  theme,
+  onBack,
+  onChangeTheme,
+  onSaveProfile,
+  onUploadAvatar,
+  onRemoveAvatar,
+  onToggleBalance,
+  onOpenSupport,
+  onOpenNotifications,
+  onReplayOnboarding,
+  onLogout,
+  onDeleteAccount,
+}: {
   profile: Profile
   hideOnOpen: boolean
   theme: Theme
   onBack: () => void
   onChangeTheme: (theme: Theme) => void
   onSaveProfile: (profile: Profile) => void
+  onUploadAvatar?: (blob: Blob, dataUrl: string) => Promise<void>
+  onRemoveAvatar?: () => Promise<void>
   onToggleBalance: () => void
+  onOpenSupport?: () => void
+  onOpenNotifications?: () => void
+  onReplayOnboarding?: () => void
   onLogout: () => void
   onDeleteAccount?: () => void
 }) {
   const [name, setName] = useState(profile.name)
   const [email, setEmail] = useState(profile.email)
-  const [errors, setErrors] = useState<{ name?: string; email?: string }>({})
+  const [errors, setErrors] = useState<{ name?: string; email?: string; avatar?: string }>({})
+  const [avatarBusy, setAvatarBusy] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const changed = name !== profile.name || email !== profile.email
+
+  const handleFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file) return
+    if (!file.type.startsWith('image/')) {
+      setErrors((prev) => ({ ...prev, avatar: 'Selecione uma imagem (JPG, PNG ou WebP).' }))
+      return
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      setErrors((prev) => ({ ...prev, avatar: 'A imagem deve ter no máximo 5 MB.' }))
+      return
+    }
+    setErrors((prev) => ({ ...prev, avatar: undefined }))
+    setAvatarBusy(true)
+    try {
+      const { blob, dataUrl } = await cropSquareAvatar(file)
+      if (onUploadAvatar) await onUploadAvatar(blob, dataUrl)
+    } catch {
+      setErrors((prev) => ({ ...prev, avatar: 'Não foi possível processar a imagem. Tente outra foto.' }))
+    } finally {
+      setAvatarBusy(false)
+    }
+  }
+
+  const handleRemoveAvatar = async () => {
+    if (!onRemoveAvatar) return
+    setAvatarBusy(true)
+    try {
+      await onRemoveAvatar()
+    } finally {
+      setAvatarBusy(false)
+    }
+  }
 
   const save = (event: FormEvent) => {
     event.preventDefault()
@@ -45,9 +121,39 @@ export default function Settings({ profile, hideOnOpen, theme, onBack, onChangeT
     <div className="settings-layout">
       <section className="panel settings-profile" aria-labelledby="settings-account-title">
         <div className="settings-identity">
-          <span className="settings-avatar"><img src="/profile-photo.png" alt={`Foto de perfil de ${profile.name}`} /></span>
+          <span className="settings-avatar"><Avatar name={profile.name} src={profile.avatarUrl} alt={`Foto de perfil de ${profile.name}`} /></span>
           <div><span className="eyebrow">{profile.role === 'admin' ? 'ADMINISTRADOR' : 'SUA CONTA'}</span><h2 id="settings-account-title">{profile.name}</h2><p>{profile.email}</p></div>
         </div>
+        <div className={`settings-avatar-actions${profile.avatarUrl ? ' has-remove' : ''}`}>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/png,image/jpeg,image/webp"
+            className="sr-only"
+            onChange={handleFileChange}
+          />
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={avatarBusy}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            <Icon name="camera" size={16} />
+            {avatarBusy ? 'Salvando…' : profile.avatarUrl ? 'Trocar foto' : 'Enviar foto'}
+          </button>
+          {profile.avatarUrl && (
+            <button
+              type="button"
+              className="danger-button settings-remove-avatar"
+              disabled={avatarBusy}
+              onClick={handleRemoveAvatar}
+            >
+              <Icon name="trash" size={16} />
+              Remover foto
+            </button>
+          )}
+        </div>
+        {errors.avatar && <p className="settings-field-error" role="alert">{errors.avatar}</p>}
         <div className="settings-section-heading"><Icon name="edit" size={17} /><h3>Dados pessoais</h3></div>
         <p className="helper-text settings-description">Mantenha suas informações sempre em dia.</p>
         <form className="form settings-form" onSubmit={save} noValidate>
@@ -90,6 +196,11 @@ export default function Settings({ profile, hideOnOpen, theme, onBack, onChangeT
             <i className={`toggle ${hideOnOpen ? 'on' : ''}`} aria-hidden="true" />
           </button>
           <dl className="settings-details"><div><dt>Idioma</dt><dd>Português (Brasil)</dd></div><div><dt>Moeda</dt><dd>Real brasileiro · R$</dd></div></dl>
+          <div className="settings-quick-links">
+            {onOpenNotifications && <button type="button" className="secondary-button settings-support-btn" onClick={onOpenNotifications}>Central e preferências de notificações<Icon name="chevron" size={16} /></button>}
+            {onOpenSupport && <button type="button" className="secondary-button settings-support-btn" onClick={onOpenSupport}>Central de Ajuda e Fale Conosco<Icon name="chevron" size={16} /></button>}
+            {onReplayOnboarding && <button type="button" className="secondary-button settings-support-btn" onClick={onReplayOnboarding}>Rever apresentação inicial<Icon name="chevron" size={16} /></button>}
+          </div>
         </section>
         <section className="panel settings-session" aria-labelledby="settings-session-title">
           <span className="eyebrow">SESSÃO</span><h2 id="settings-session-title">Até o próximo passo.</h2><p>Você pode sair da sua conta quando quiser, sem apagar seus registros.</p>
