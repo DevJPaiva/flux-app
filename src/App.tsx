@@ -1,24 +1,33 @@
-import { lazy, Suspense, useEffect, useLayoutEffect, useState, type CSSProperties, type FormEvent } from 'react'
+import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
 import {
-  STORAGE_KEY, addCategory, calculateBalance, categoryIcon, categoryTotals, cents, importInvoiceBatch,
-  initialData, isCustomCategory, isIncome, money, monthExpenses, pct, prettyDate, readData, removeCard,
-  removeCategory, removeExpense, removeGoal, removeInvoiceBatch, updateCategory, upsertExpense, upsertGoal,
-  type Card, type FinanceData, type Goal, type InvoiceBatch, type Transaction, type TransactionType, type View,
+  PAYMENT_METHOD_LABELS, STORAGE_KEY, addCategory, calculateBalance, categoryIcon, categoryTotals, cents,
+  importInvoiceBatch, initialData, isCustomCategory, isDebitCard, isIncome, money, monthExpenses,
+  paymentLabel, pct, prettyDate, readData, removeCard, removeCategory, removeExpense, removeGoal,
+  removeInvoiceBatch, resolvePaymentMethod, updateCategory, upsertExpense, upsertGoal,
+  type Card, type FinanceData, type Goal, type InvoiceBatch, type PaymentMethod, type Transaction, type TransactionType, type View,
 } from './finance'
-import { Brand, Empty, Icon, PageHeader, Progress, Sheet } from './ui'
+import { AccessTransition, Avatar, Brand, Empty, Icon, PageHeader, Progress, Sheet, SplashScreen, SuccessState, Toast, type ToastTone } from './ui'
+import { runAccessTransition, useHomeEntrance, useViewEntrance, useWalletCardPulse } from './animations'
 import { BalanceForm, BudgetForm, CardForm, CategoryForm, ExpenseForm, GoalForm, SaveForm } from './forms'
+import Auth, { type AuthField, type AuthFieldErrors, type AuthMode } from './Auth'
+import Onboarding from './Onboarding'
+import Notifications, {
+  buildNotifications, loadDismissedIds, loadNotificationPrefs, loadReadIds,
+  saveDismissedIds, saveNotificationPrefs, saveReadIds, type NotificationPrefs,
+} from './Notifications'
 import Settings from './Settings'
 import BottomNavigation from './BottomNavigation'
 import Transactions from './Transactions'
 import Premium from './Premium'
-import { isSupabaseConfigured, supabase } from './lib/supabase'
+import { getRememberSession, isSupabaseConfigured, setRememberSession, supabase } from './lib/supabase'
 import {
   addCategoryDb, deleteAccountDataDb, deleteCardDb, deleteCategoryDb,
   deleteGoalDb, deleteInvoiceBatchDb, deleteTransactionDb, importInvoiceBatchDb, loadUserFinanceData,
-  saveToGoalDb, updateCategoryDb, updateProfileDb, upsertCardDb, upsertGoalDb, upsertTransactionDb,
+  removeAvatarDb, saveToGoalDb, updateCategoryDb, updateProfileDb, uploadAvatarDb, upsertCardDb, upsertGoalDb, upsertTransactionDb,
 } from './lib/fluxApi'
 const Invoice = lazy(() => import('./Invoice'))
 const Assistant = lazy(() => import('./Assistant'))
+const Support = lazy(() => import('./Support'))
 
 type Overlay =
   | { type: 'expense'; transaction?: Transaction; initialType?: TransactionType }
@@ -38,73 +47,30 @@ type Overlay =
   | { type: 'deleteAccount' }
   | { type: 'deleteBatch'; batch: InvoiceBatch; activeCount: number }
   | { type: 'delete'; transaction: Transaction }
+  | { type: 'success'; title: string; message: string; actionLabel?: string; goHome?: boolean }
 
-function Auth({
-  mode,
-  switchMode,
-  enter,
-  busy,
-  error,
-}: {
-  mode: 'login' | 'signup'
-  switchMode: () => void
-  enter: (name: string, email: string, password: string) => Promise<void>
-  busy: boolean
-  error: string
-}) {
-  const signup = mode === 'signup'
-  const submit = (e: FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
-    const fields = new FormData(e.currentTarget)
-    void enter(
-      signup ? String(fields.get('name') || '') : '',
-      String(fields.get('email') || ''),
-      String(fields.get('password') || ''),
-    )
-  }
-  return <div className="auth-page">
-    <header className="auth-header"><Brand showMark={false} /></header>
-    <div className="auth-layout">
-      <section className="auth-story">
-        <span className="eyebrow">SEU DINHEIRO. SUAS CONQUISTAS.</span>
-        <h1>Mais clareza.<br /><span>Mais possibilidades.</span></h1>
-        <p>Entenda o fluxo do seu dinheiro. Um lugar para cuidar do hoje e planejar tudo que vem depois.</p>
-        <div className="auth-visual" aria-hidden="true">
-          <article className="auth-mini-card"><div><span>Flux</span><Icon name="card" /></div><small>Seu saldo</small><strong>R$ 14.500</strong><span>O próximo passo é seu.</span></article>
-          <div className="auth-mini-goal"><span className="row-icon"><Icon name="target" /></span><div><strong>Viagem ao Japão</strong><small>68% mais perto de acontecer</small><Progress value={68} tone="dark" /></div></div>
-        </div>
-      </section>
-      <section className="auth-form-panel" key={mode}>
-        {signup && <span className="eyebrow">COMECE DO SEU JEITO</span>}
-        <h2>{signup ? 'Grandes planos\ncomeçam aqui.' : 'Seu dinheiro,\ncom mais clareza.'}</h2>
-        <p>{signup ? 'Crie seu espaço para organizar e conquistar.' : 'Entre e continue cuidando do que importa.'}</p>
-        <form className="form" noValidate onSubmit={submit}>
-          {signup && <label><span>Seu nome</span><input name="name" placeholder="Como podemos chamar você?" autoComplete="name" /></label>}
-          <label><span>E-mail</span><input name="email" type="email" placeholder="seu@email.com" autoComplete="email" /></label>
-          <label><span>Senha</span><input name="password" type="password" placeholder="Sua senha" autoComplete={signup ? 'new-password' : 'current-password'} /></label>
-          {error && <p className="form-error" role="alert">{error}</p>}
-          <button className="primary-button" disabled={busy}>{busy ? 'Conectando…' : signup ? 'Criar conta' : 'Entrar'}<Icon name="arrow" /></button>
-        </form>
-        <p className="auth-switch">{signup ? 'Já tem uma conta?' : 'Primeira vez por aqui?'} <button className="text-button" type="button" onClick={switchMode}>{signup ? 'Entrar' : 'Criar conta'}</button></p>
-      </section>
-    </div>
-    <footer className="auth-footer">Feito para os seus próximos passos.</footer>
-  </div>
-}
-
-function Home({ data, hidden, setHidden, balance, open, navigate }: {
-  data: FinanceData; hidden: boolean; setHidden: (value: boolean) => void; balance: number; open: (sheet: Overlay) => void; navigate: (view: View) => void
+function Home({ data, hidden, setHidden, balance, unreadCount, open, navigate }: {
+  data: FinanceData; hidden: boolean; setHidden: (value: boolean) => void; balance: number; unreadCount: number; open: (sheet: Overlay) => void; navigate: (view: View) => void
 }) {
   const [showCategories, setShowCategories] = useState(false)
+  const homeRef = useRef<HTMLDivElement>(null)
+  useHomeEntrance(homeRef)
   const month = monthExpenses(data.transactions)
   const total = cents(month.reduce((sum, item) => sum + item.amount, 0))
   const categories = categoryTotals(data.transactions, data.categories).filter((c) => c.value > 0)
   const comparison = Math.round((total / (2340 / .88) - 1) * 100)
   const transactions = [...data.transactions].sort((a, b) => b.date.localeCompare(a.date))
-  return <>
+  return <div ref={homeRef}>
     <header className="home-header">
-      <button className="avatar" onClick={() => open({ type: 'account' })} aria-label="Abrir conta"><img src="/profile-photo.png" alt="" /></button>
-      <div><span>Olá,</span><strong>{data.profile.name.split(' ')[0]}</strong></div><Brand showMark={false} />
+      <button className="avatar" onClick={() => open({ type: 'account' })} aria-label="Abrir conta"><Avatar name={data.profile.name} src={data.profile.avatarUrl} /></button>
+      <div><span>Olá,</span><strong>{data.profile.name.split(' ')[0]}</strong></div>
+      <div className="home-header-right">
+        <button className="icon-button home-bell" type="button" onClick={() => navigate('notifications')} aria-label="Central de notificações">
+          <Icon name="bell" size={20} />
+          {unreadCount > 0 && <span className="bell-badge" aria-label={`${unreadCount} não lidas`} />}
+        </button>
+        <Brand showMark={false} />
+      </div>
     </header>
     <section className="balance-card">
       <div className="balance-top"><span className="card-brand">flux</span><span className="mono">SEU DINHEIRO, EM FLUXO</span></div>
@@ -135,14 +101,27 @@ function Home({ data, hidden, setHidden, balance, open, navigate }: {
         {transactions.length > 0 && <button className="text-button section-link" onClick={() => navigate('transactions')}>Analisar todas as transações<Icon name="arrow" size={15} /></button>}
       </section>
     </div>
-  </>
+  </div>
 }
 
 function Wallet({ data, onBack, open }: { data: FinanceData; onBack: () => void; open: (sheet: Overlay) => void }) {
   const [selectedId, setSelectedId] = useState(data.cards[0]?.id)
+  const stackRef = useRef<HTMLDivElement>(null)
   const selected = data.cards.find((c) => c.id === selectedId) || data.cards[0]
+  useWalletCardPulse(stackRef, selected?.id)
   const ordered = selected ? [selected, ...data.cards.filter((c) => c.id !== selected.id)] : []
-  const used = selected ? pct(selected.bill, selected.limit) : 0
+  const selectedDebit = selected ? isDebitCard(selected) : false
+  const used = selected && !selectedDebit ? pct(selected.bill, selected.limit) : 0
+  const monthItems = monthExpenses(data.transactions)
+  const selectedDebitSpend = selected
+    ? cents(monthItems.filter((t) => t.cardId === selected.id).reduce((sum, t) => sum + t.amount, 0))
+    : 0
+  const creditCards = data.cards.filter((c) => !isDebitCard(c))
+  const methodTotals = (['pix', 'cash', 'debit', 'credit'] as PaymentMethod[]).map((method) => ({
+    method,
+    label: PAYMENT_METHOD_LABELS[method],
+    total: cents(monthItems.filter((t) => resolvePaymentMethod(t, data.cards) === method).reduce((sum, t) => sum + t.amount, 0)),
+  }))
   const rotate = () => {
     if (!selected || data.cards.length < 2) return
     const currentIndex = data.cards.findIndex((card) => card.id === selected.id)
@@ -150,41 +129,77 @@ function Wallet({ data, onBack, open }: { data: FinanceData; onBack: () => void;
   }
   return <div className="view-page">
     <PageHeader title="Meus cartões" onBack={onBack} action={<button className="icon-button" onClick={() => open({ type: 'card' })} aria-label="Novo cartão"><Icon name="plus" /></button>} />
-    <div className="page-intro"><span className="eyebrow">SUA CARTEIRA</span><h2>Todos os cartões.<br />Nenhuma surpresa.</h2><p>Faturas e limites registrados por você, em um só lugar.</p></div>
-    {!selected ? <section className="panel"><Empty icon="card" title="Sua carteira começa aqui"><p>Cadastre um cartão para acompanhar faturas e limites.</p><button className="primary-button" onClick={() => open({ type: 'card' })}>Adicionar cartão</button></Empty></section> : <div className="cards-layout">
+    <div className="page-intro"><span className="eyebrow">SUA CARTEIRA</span><h2>Todos os cartões.<br />Nenhuma surpresa.</h2><p>Crédito, débito e formas de pagamento do seu mês, em um só lugar.</p></div>
+    {!selected ? (
+      <div className="cards-layout">
+        <section className="panel"><Empty icon="card" title="Sua carteira começa aqui"><p>Cadastre um cartão de crédito ou débito para organizar seus gastos, ou use Pix e Dinheiro direto nas transações.</p><button className="primary-button" onClick={() => open({ type: 'card' })}>Adicionar cartão</button></Empty></section>
+        <section className="panel upcoming"><div className="section-heading"><div><span className="eyebrow">ESTE MÊS</span><h2>Meios de pagamento</h2></div></div>
+          {methodTotals.map((item) => <div className="bill-row" key={item.method}><span className="row-icon"><Icon name={item.method === 'credit' || item.method === 'debit' ? 'card' : 'wallet'} /></span><span className="bill-copy"><strong>{item.label}</strong><small>Gastos registrados no mês</small></span><strong>{money(item.total)}</strong></div>)}
+        </section>
+      </div>
+    ) : <div className="cards-layout">
       <section>
-        <div className="card-stack standardized-stack" style={{ '--stack-count': Math.min(ordered.length, 3) } as CSSProperties} onClick={rotate} role="button" tabIndex={0} aria-label={`Cartão ${selected.name} em destaque. Ative para trocar.`} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); rotate() } }}>
-          {ordered.slice(0, 3).map((card, index, visible) => <article key={card.id} className={`wallet-card standardized-card ${card.tone}`} aria-hidden={index !== 0} style={{ '--index': index, '--stack-offset': visible.length - index - 1, zIndex: visible.length - index } as CSSProperties}>
-            <div className="wallet-heading"><span>{card.name}</span><strong>•• {card.end}</strong></div>
-            <svg className="card-chip" viewBox="0 0 42 32" width="38" height="29" aria-label="Chip" role="img"><rect x="1" y="1" width="40" height="30" rx="7" fill="#dbd2b2" stroke="#94886c" /><path d="M15 1v9l-5 6 5 6v9M27 1v9l5 6-5 6v9M1 10h14M1 22h14M27 10h14M27 22h14M15 10h12v12H15" fill="none" stroke="#94886c" strokeWidth=".8" /></svg>
-            <span className="wallet-brand">flux</span><span className="wallet-label">Fatura atual</span><h2>{money(card.bill)}</h2>
-            <div className="wallet-bottom"><span><strong>{data.profile.name.toUpperCase()}</strong><small>Vence em {card.due} dias</small></span><span className="card-network" role="img" aria-label="Bandeira Mastercard ilustrativa"><i /><i /></span></div>
-          </article>)}
+        <div ref={stackRef} className="card-stack standardized-stack" style={{ '--stack-count': Math.min(ordered.length, 3) } as CSSProperties} onClick={rotate} role="button" tabIndex={0} aria-label={`Cartão ${selected.name} em destaque. Ative para trocar.`} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); rotate() } }}>
+          {ordered.slice(0, 3).map((card, index, visible) => {
+            const debit = isDebitCard(card)
+            const cardSpend = debit ? cents(monthItems.filter((t) => t.cardId === card.id).reduce((sum, t) => sum + t.amount, 0)) : card.bill
+            return <article key={card.id} className={`wallet-card standardized-card ${card.tone}`} aria-hidden={index !== 0} style={{ '--index': index, '--stack-offset': visible.length - index - 1, zIndex: visible.length - index } as CSSProperties}>
+              <div className="wallet-heading"><span>{card.name}</span><strong>•• {card.end}</strong></div>
+              <svg className="card-chip" viewBox="0 0 42 32" width="38" height="29" aria-label="Chip" role="img"><rect x="1" y="1" width="40" height="30" rx="7" fill="#dbd2b2" stroke="#94886c" /><path d="M15 1v9l-5 6 5 6v9M27 1v9l5 6-5 6v9M1 10h14M1 22h14M27 10h14M27 22h14M15 10h12v12H15" fill="none" stroke="#94886c" strokeWidth=".8" /></svg>
+              <span className="wallet-brand">flux</span><span className="wallet-label">{debit ? 'Cartão de Débito' : 'Fatura atual'}</span><h2>{money(cardSpend)}</h2>
+              <div className="wallet-bottom"><span><strong>{data.profile.name.toUpperCase()}</strong><small>{debit ? 'Débito à vista' : `Vence em ${card.due} dias`}</small></span><span className="card-network" role="img" aria-label="Bandeira Mastercard ilustrativa"><i /><i /></span></div>
+            </article>
+          })}
         </div>
         <p className="stack-hint">Toque na pilha ou escolha um cartão abaixo</p>
-        <div className="card-tabs" aria-label="Selecionar cartão">{data.cards.map((card) => <button aria-pressed={card.id === selected.id} key={card.id} onClick={() => setSelectedId(card.id)}>{card.name}<small>•• {card.end}</small></button>)}</div>
-        <section className="usage usage-panel" aria-label={`Uso do limite de ${selected.name}`}>
-          <div><span>Uso do limite · {selected.name}</span><strong>{used}%</strong></div><Progress value={used} label="Limite utilizado" />
-          <div className="usage-amounts"><span><small>Utilizado</small><strong>{money(selected.bill)}</strong></span><span><small>Disponível</small><strong>{money(Math.max(0, cents(selected.limit - selected.bill)))}</strong></span></div>
-          <p className="helper-text">Limite total: {money(selected.limit)}{used > 100 ? ' · Fatura acima do limite cadastrado' : ''}</p>
-          <button className="text-button" onClick={() => open({ type: 'card', card: selected })}><Icon name="edit" size={15} />Editar cartão e fatura</button>
+        <div className="card-tabs" aria-label="Selecionar cartão">{data.cards.map((card) => <button aria-pressed={card.id === selected.id} key={card.id} onClick={() => setSelectedId(card.id)}>{card.name}<small>•• {card.end} · {isDebitCard(card) ? 'Débito' : 'Crédito'}</small></button>)}</div>
+        <section className="usage usage-panel" aria-label={selectedDebit ? `Gastos no débito de ${selected.name}` : `Uso do limite de ${selected.name}`}>
+          {selectedDebit ? (
+            <>
+              <div><span>Débito · {selected.name}</span><strong>{money(selectedDebitSpend)}</strong></div>
+              <p className="helper-text">Gastos neste cartão descontam diretamente do saldo disponível, sem fatura mensal.</p>
+              <button className="text-button" onClick={() => open({ type: 'card', card: selected })}><Icon name="edit" size={15} />Editar cartão</button>
+            </>
+          ) : (
+            <>
+              <div><span>Uso do limite · {selected.name}</span><strong>{used}%</strong></div><Progress value={used} label="Limite utilizado" />
+              <div className="usage-amounts"><span><small>Utilizado</small><strong>{money(selected.bill)}</strong></span><span><small>Disponível</small><strong>{money(Math.max(0, cents(selected.limit - selected.bill)))}</strong></span></div>
+              <p className="helper-text">Limite total: {money(selected.limit)}{used > 100 ? ' · Fatura acima do limite cadastrado' : ''}</p>
+              <button className="text-button" onClick={() => open({ type: 'card', card: selected })}><Icon name="edit" size={15} />Editar cartão e fatura</button>
+            </>
+          )}
         </section>
       </section>
-      <section className="panel upcoming"><div className="section-heading"><div><span className="eyebrow">VISÃO GERAL</span><h2>Próximas faturas</h2></div></div>
-        {data.cards.map((card) => <button className="bill-row bill-button" key={card.id} onClick={() => { setSelectedId(card.id); open({ type: 'card', card }) }}><span className="row-icon"><Icon name="card" /></span><span className="bill-copy"><strong>{card.name}</strong><small>Vence em {card.due} dias · •• {card.end}</small></span><strong>{money(card.bill)}</strong></button>)}
-        <div className="bill-total"><span>Total registrado</span><strong>{money(cents(data.cards.reduce((sum, card) => sum + card.bill, 0)))}</strong></div>
-        <p className="helper-text">Os valores são manuais. Toque em uma fatura para ajustar.</p>
+      <section className="panel upcoming">
+        <div className="section-heading"><div><span className="eyebrow">VISÃO GERAL</span><h2>{creditCards.length ? 'Próximas faturas' : 'Meios de pagamento'}</h2></div></div>
+        {creditCards.length > 0 ? (
+          <>
+            {creditCards.map((card) => <button className="bill-row bill-button" key={card.id} onClick={() => { setSelectedId(card.id); open({ type: 'card', card }) }}><span className="row-icon"><Icon name="card" /></span><span className="bill-copy"><strong>{card.name}</strong><small>Vence em {card.due} dias · •• {card.end}</small></span><strong>{money(card.bill)}</strong></button>)}
+            <div className="bill-total"><span>Total em faturas</span><strong>{money(cents(creditCards.reduce((sum, card) => sum + card.bill, 0)))}</strong></div>
+          </>
+        ) : (
+          <p className="helper-text">Nenhum cartão de crédito cadastrado. Você pode acompanhar seus gastos por Pix, Dinheiro e Débito abaixo.</p>
+        )}
+        <div className="wallet-methods-summary">
+          <span className="eyebrow">ESTE MÊS POR PAGAMENTO</span>
+          {methodTotals.map((item) => (
+            <div className="bill-row" key={item.method}>
+              <span className="row-icon"><Icon name={item.method === 'credit' || item.method === 'debit' ? 'card' : 'wallet'} /></span>
+              <span className="bill-copy"><strong>{item.label}</strong></span>
+              <strong>{money(item.total)}</strong>
+            </div>
+          ))}
+        </div>
       </section>
     </div>}
   </div>
 }
 
-function Goals({ data, onBack, open, navigate }: { data: FinanceData; onBack: () => void; open: (sheet: Overlay) => void; navigate: (view: View) => void }) {
+function Goals({ data, onBack, open }: { data: FinanceData; onBack: () => void; open: (sheet: Overlay) => void }) {
   const total = cents(monthExpenses(data.transactions).reduce((sum, item) => sum + item.amount, 0))
   const available = cents(data.budget - total)
   const categories = categoryTotals(data.transactions, data.categories)
   const days = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).getDate() - new Date().getDate()
-  const subscriptions = categories.find((c) => c.name === 'Assinaturas')?.value || 0
   return <div className="view-page">
     <PageHeader title="Metas" onBack={onBack} action={<button className="icon-button" onClick={() => open({ type: 'goal' })} aria-label="Nova meta"><Icon name="plus" /></button>} />
     <div className="page-intro"><span className="eyebrow">UM PASSO DE CADA VEZ</span><h2>Cuide do mês.<br />Planeje o que vem.</h2><p>Seu orçamento de hoje e as conquistas de amanhã.</p></div>
@@ -203,7 +218,6 @@ function Goals({ data, onBack, open, navigate }: { data: FinanceData; onBack: ()
           {data.goals.slice(0, 1).map((goal) => <article className="featured-goal" key={goal.id}><div className="goal-top"><div><span className="eyebrow dark">{goal.date ? new Date(`${goal.date}T12:00:00`).toLocaleDateString('pt-BR', { month: 'short', year: 'numeric' }).toUpperCase() : 'NO SEU TEMPO'}</span><h3>{goal.name}</h3></div><div className="goal-top-actions"><button className="goal-edit-button" type="button" onClick={() => open({ type: 'goalDetail', goal })} aria-label={`Gerenciar meta ${goal.name}`} title="Editar ou excluir meta"><Icon name="edit" size={16} /></button><div className="goal-ring" style={{ '--progress': `${Math.min(100, pct(goal.saved, goal.target))}%` } as CSSProperties}><strong>{pct(goal.saved, goal.target)}%</strong></div></div></div><div className="goal-amount"><span>Já guardado de {money(goal.target)}</span><strong>{money(goal.saved)}</strong></div><button className="dark-button" disabled={goal.saved >= goal.target} onClick={() => open({ type: 'save', goal })}><Icon name={goal.saved >= goal.target ? 'check' : 'plus'} />{goal.saved >= goal.target ? 'Meta conquistada' : 'Guardar um valor'}</button></article>)}
           <div className="goals-list">{data.goals.slice(1).map((goal) => <div key={goal.id}><button className="goal-row-trigger" type="button" onClick={() => open({ type: 'goalDetail', goal })}><strong>{goal.name}</strong><small>{money(goal.saved)} de {money(goal.target)}</small></button><button className="goal-save-link" disabled={goal.saved >= goal.target} onClick={() => open({ type: 'save', goal })} aria-label={`Guardar em ${goal.name}`}>{goal.saved >= goal.target ? <Icon name="check" size={15} /> : <Icon name="plus" size={15} />}{pct(goal.saved, goal.target)}%</button><Progress value={pct(goal.saved, goal.target)} tone="lilac" label={goal.name} /></div>)}</div>
         </> : <section className="panel goals-empty-panel"><Empty icon="target" title="Qual é seu próximo plano?"><p>Crie uma meta e acompanhe cada valor guardado.</p><button className="text-button" onClick={() => open({ type: 'goal' })}>Criar primeira meta</button></Empty></section>}
-        <button className="assistant-card" onClick={() => navigate('assistant')}><div><span className="eyebrow dark">ASSISTENTE FLUX</span><strong>{subscriptions ? `Você registrou ${money(subscriptions)} em assinaturas. Vamos olhar de perto?` : 'Seus planos começam com clareza. Vamos olhar seus números?'}</strong></div><span className="round-arrow"><Icon name="arrow" /></span></button>
       </section>
     </div>
   </div>
@@ -227,6 +241,7 @@ const sheetTitle = (sheet: Overlay) => ({
   deleteAccount: 'Excluir conta?',
   deleteBatch: 'Excluir lote da fatura?',
   delete: sheet.type === 'delete' && isIncome(sheet.transaction) ? 'Apagar receita?' : 'Apagar compra?',
+  success: 'Tudo certo!',
 })[sheet.type]
 
 export default function App() {
@@ -239,19 +254,47 @@ export default function App() {
   const [authReady, setAuthReady] = useState(!isSupabaseConfigured)
   const [authBusy, setAuthBusy] = useState(false)
   const [authError, setAuthError] = useState('')
-  const [authMode, setAuthMode] = useState<'login' | 'signup'>('login')
+  const [authFieldErrors, setAuthFieldErrors] = useState<AuthFieldErrors>({})
+  const [authMode, setAuthMode] = useState<AuthMode>('login')
+  const [rememberSession, setRememberSessionState] = useState(() => getRememberSession())
+  const [resetSentEmail, setResetSentEmail] = useState('')
+  const [signupResult, setSignupResult] = useState<{ email: string; needsConfirmation: boolean } | null>(null)
+  const [pendingEnterUser, setPendingEnterUser] = useState(false)
+  const holdAuthSuccessRef = useRef(false)
+  const [showOnboarding, setShowOnboarding] = useState(() => {
+    try { return localStorage.getItem('flux-onboarding-done') !== 'true' } catch { return false }
+  })
+  const [notificationPrefs, setNotificationPrefs] = useState<NotificationPrefs>(() => loadNotificationPrefs())
+  const [readNotificationIds, setReadNotificationIds] = useState<string[]>(() => loadReadIds())
+  const [dismissedNotificationIds, setDismissedNotificationIds] = useState<string[]>(() => loadDismissedIds())
   const [history, setHistory] = useState<View[]>(['home'])
   const view = history[history.length - 1]
+  const [transitioning, setTransitioning] = useState(false)
+  const prevAuthenticatedRef = useRef(authenticated)
+  const shellRef = useRef<HTMLDivElement>(null)
+  useViewEntrance(shellRef, view)
+  useEffect(() => {
+    if (!prevAuthenticatedRef.current && authenticated) {
+      setTransitioning(true)
+    }
+    prevAuthenticatedRef.current = authenticated
+  }, [authenticated])
+  useEffect(() => {
+    if (!transitioning) return
+    const el = document.querySelector<HTMLElement>('.access-transition')
+    return runAccessTransition(el, () => setTransitioning(false))
+  }, [transitioning])
   const [sheet, setSheet] = useState<Overlay | null>(null)
   const [hidden, setHidden] = useState(data.hideOnOpen)
-  const [toast, setToast] = useState('')
+  const [toast, setToastState] = useState<{ message: string; tone: ToastTone } | null>(null)
+  const setToast = (message: string, tone: ToastTone = 'success') => setToastState({ message, tone })
   const [storageError, setStorageError] = useState(false)
   const balance = calculateBalance(data)
 
   const sync = (task: Promise<void>) => {
     task.catch((err) => {
       console.error('[Flux Supabase]', err)
-      setToast('Não foi possível sincronizar com o banco. Tente novamente.')
+      setToast('Não foi possível sincronizar com o banco. Tente novamente.', 'error')
     })
   }
 
@@ -265,10 +308,10 @@ export default function App() {
         setUserId(uid)
         setData(remote)
         setHidden(remote.hideOnOpen)
-        setAuthenticated(true)
+        if (!holdAuthSuccessRef.current) setAuthenticated(true)
       } catch (err) {
         console.error('[Flux Supabase load]', err)
-        if (active) setToast('Erro ao carregar seus dados do Supabase.')
+        if (active) setToast('Erro ao carregar seus dados do Supabase.', 'error')
       } finally {
         if (active) setAuthReady(true)
       }
@@ -280,7 +323,13 @@ export default function App() {
       else if (active) setAuthReady(true)
     })
 
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: listener } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'PASSWORD_RECOVERY') {
+        setAuthMode('reset')
+        setAuthenticated(false)
+        setAuthReady(true)
+        return
+      }
       const uid = session?.user?.id || null
       if (!uid) {
         setUserId(null)
@@ -312,51 +361,149 @@ export default function App() {
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); setStorageError(false) }
     catch { setStorageError(true) }
   }, [data])
-  useEffect(() => { if (!toast) return; const timer = window.setTimeout(() => setToast(''), 3300); return () => window.clearTimeout(timer) }, [toast])
+  useEffect(() => { if (!toast) return; const timer = window.setTimeout(() => setToastState(null), 3500); return () => window.clearTimeout(timer) }, [toast])
   useEffect(() => { window.scrollTo(0, 0); document.querySelector<HTMLElement>('.page-header h1')?.focus({ preventScroll: true }) }, [view, authenticated])
   const navigate = (next: View) => setHistory((items) => [...items, next])
   const back = () => setHistory((items) => items.length > 1 ? items.slice(0, -1) : ['home'])
   const close = () => setSheet(null)
   const saved = (text: string) => { close(); setToast(text) }
 
-  const enter = async (name: string, email: string, password: string) => {
+  const clearAuthErrors = (field?: AuthField) => {
     setAuthError('')
-    const cleanEmail = email.trim()
-    const cleanName = name.trim()
+    if (!field) setAuthFieldErrors({})
+    else setAuthFieldErrors((prev) => ({ ...prev, [field]: undefined }))
+  }
+
+  const handleRememberSession = (remember: boolean) => {
+    setRememberSessionState(remember)
+    setRememberSession(remember)
+  }
+
+  const handleLogin = async (email: string, password: string) => {
+    clearAuthErrors()
+    setRememberSession(rememberSession)
     if (!supabase) {
-      if (cleanName || cleanEmail) setData((current) => ({ ...current, profile: { name: cleanName || current.profile.name, email: cleanEmail || current.profile.email } }))
-      try { sessionStorage.setItem('eskgo-demo-session', 'active') } catch { /* The preview also works without session storage. */ }
+      setData((current) => ({ ...current, profile: { ...current.profile, email: email || current.profile.email } }))
+      try { sessionStorage.setItem('eskgo-demo-session', 'active') } catch { /* Demo mode */ }
       setHistory(['home']); setHidden(data.hideOnOpen); setAuthenticated(true)
-      return
-    }
-    if (!cleanEmail || !password) {
-      setAuthError('Informe e-mail e senha para continuar.')
       return
     }
     setAuthBusy(true)
     try {
-      if (authMode === 'signup') {
-        if (!cleanName) { setAuthError('Informe seu nome para criar a conta.'); return }
-        const { data: res, error } = await supabase.auth.signUp({
-          email: cleanEmail,
-          password,
-          options: { data: { name: cleanName } },
-        })
-        if (error) { setAuthError(error.message); return }
-        if (!res.session) {
-          setToast('Conta criada! Verifique seu e-mail para confirmar o acesso.')
-          setAuthMode('login')
-          return
+      const { error } = await supabase.auth.signInWithPassword({ email, password })
+      if (error) {
+        const msg = error.message.toLowerCase()
+        if (msg.includes('email not confirmed')) {
+          setAuthFieldErrors({ email: 'Confirme seu e-mail antes de entrar.' })
+          setAuthError('Seu e-mail ainda não foi confirmado. Verifique sua caixa de entrada ou spam.')
+        } else if (msg.includes('invalid login credentials')) {
+          setAuthFieldErrors({ email: 'Verifique o e-mail digitado.', password: 'Verifique a senha digitada.' })
+          setAuthError('E-mail ou senha incorretos. Confira seus dados e tente novamente.')
+        } else {
+          setAuthError(error.message)
         }
-        setHistory(['home'])
-      } else {
-        const { error } = await supabase.auth.signInWithPassword({ email: cleanEmail, password })
-        if (error) {
-          setAuthError('E-mail ou senha incorretos. Verifique seus dados ou crie uma conta.')
-          return
-        }
-        setHistory(['home'])
+        return
       }
+      setHistory(['home'])
+    } finally {
+      setAuthBusy(false)
+    }
+  }
+
+  const handleSignup = async (name: string, email: string, password: string) => {
+    clearAuthErrors()
+    try { localStorage.removeItem('flux-onboarding-done') } catch { /* Ignore */ }
+    setShowOnboarding(true)
+    if (!supabase) {
+      setData((current) => ({ ...current, profile: { ...current.profile, name, email, avatarUrl: undefined } }))
+      try { sessionStorage.setItem('eskgo-demo-session', 'active') } catch { /* Demo mode */ }
+      setSignupResult({ email, needsConfirmation: false })
+      setPendingEnterUser(true)
+      setAuthMode('signupSuccess')
+      return
+    }
+    setAuthBusy(true)
+    holdAuthSuccessRef.current = true
+    try {
+      const { data: res, error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: { data: { name } },
+      })
+      if (error) {
+        holdAuthSuccessRef.current = false
+        const msg = error.message.toLowerCase()
+        if (msg.includes('already registered') || msg.includes('already exists')) {
+          setAuthFieldErrors({ email: 'Este e-mail já está cadastrado.' })
+          setAuthError('Já existe uma conta com este e-mail. Tente entrar ou redefinir sua senha.')
+        } else {
+          setAuthError(error.message)
+        }
+        return
+      }
+      if (!res.session) {
+        holdAuthSuccessRef.current = false
+        setSignupResult({ email, needsConfirmation: true })
+        setPendingEnterUser(false)
+        setAuthMode('signupSuccess')
+        return
+      }
+      setSignupResult({ email, needsConfirmation: false })
+      setPendingEnterUser(true)
+      setAuthMode('signupSuccess')
+    } finally {
+      setAuthBusy(false)
+    }
+  }
+
+  const handleRequestReset = async (email: string) => {
+    clearAuthErrors()
+    if (!supabase) {
+      setResetSentEmail(email)
+      return
+    }
+    setAuthBusy(true)
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo: window.location.origin,
+      })
+      if (error) {
+        setAuthError(error.message)
+        return
+      }
+      setResetSentEmail(email)
+    } finally {
+      setAuthBusy(false)
+    }
+  }
+
+  const handleUpdatePassword = async (password: string) => {
+    clearAuthErrors()
+    if (!supabase) {
+      setPendingEnterUser(false)
+      setAuthMode('resetSuccess')
+      return
+    }
+    setAuthBusy(true)
+    holdAuthSuccessRef.current = true
+    try {
+      const { data: res, error } = await supabase.auth.updateUser({ password })
+      if (error) {
+        holdAuthSuccessRef.current = false
+        setAuthError(error.message)
+        return
+      }
+      if (res.user?.id) {
+        const remote = await loadUserFinanceData(res.user.id)
+        setUserId(res.user.id)
+        setData(remote)
+        setHidden(remote.hideOnOpen)
+        setPendingEnterUser(true)
+      } else {
+        holdAuthSuccessRef.current = false
+        setPendingEnterUser(false)
+      }
+      setAuthMode('resetSuccess')
     } finally {
       setAuthBusy(false)
     }
@@ -366,20 +513,67 @@ export default function App() {
     const next = importInvoiceBatch(data, batch, items)
     setData(next)
     if (userId) sync(importInvoiceBatchDb(userId, batch, items, next.cards, file))
-    setToast(`${items.length} lançamentos adicionados à Home.`)
+    setSheet({
+      type: 'success',
+      title: 'Fatura importada!',
+      message: `${items.length} lançamentos (${money(batch.total)}) foram adicionados à sua Home e à fatura do cartão.`,
+      actionLabel: 'Ir para a Home',
+      goHome: true,
+    })
     return true
   }
 
+  const unreadNotifications = (() => {
+    const all = buildNotifications(data, balance, notificationPrefs, dismissedNotificationIds)
+    return all.filter((item) => !readNotificationIds.includes(item.id)).length
+  })()
+
   return <main className={`app${authenticated ? ' app--with-navigation' : ''}`}>
     <div className="ambient ambient-one" /><div className="ambient ambient-two" />
-    {!authReady ? <div className="app-shell"><div className="panel" role="status">Conectando ao seu espaço Flux…</div></div>
-      : !authenticated ? <Auth mode={authMode} switchMode={() => { setAuthError(''); setAuthMode(authMode === 'login' ? 'signup' : 'login') }} enter={enter} busy={authBusy} error={authError} /> : <>
-      <div className="app-shell">
-        {view === 'home' && <Home data={data} hidden={hidden} setHidden={setHidden} balance={balance} open={setSheet} navigate={navigate} />}
+    {!authReady ? <SplashScreen />
+      : !authenticated ? <Auth
+        mode={authMode}
+        setMode={(next) => { setResetSentEmail(''); setAuthMode(next) }}
+        onLogin={handleLogin}
+        onSignup={handleSignup}
+        onRequestReset={handleRequestReset}
+        onUpdatePassword={handleUpdatePassword}
+        rememberSession={rememberSession}
+        onChangeRememberSession={handleRememberSession}
+        busy={authBusy}
+        error={authError}
+        fieldErrors={authFieldErrors}
+        clearErrors={clearAuthErrors}
+        resetSentEmail={resetSentEmail}
+        signupResult={signupResult}
+        onContinueAfterSignup={pendingEnterUser ? () => {
+          holdAuthSuccessRef.current = false
+          setPendingEnterUser(false)
+          setHistory(['home'])
+          setHidden(data.hideOnOpen)
+          setAuthenticated(true)
+        } : undefined}
+        onContinueAfterReset={pendingEnterUser ? () => {
+          holdAuthSuccessRef.current = false
+          setPendingEnterUser(false)
+          setHistory(['home'])
+          setAuthenticated(true)
+        } : undefined}
+      /> : showOnboarding ? <Onboarding onComplete={() => {
+        try { localStorage.setItem('flux-onboarding-done', 'true') } catch { /* Ignore */ }
+        setShowOnboarding(false)
+        setTransitioning(true)
+      }} /> : <>
+      <div className="app-shell" ref={shellRef}>
+        {view === 'home' && <Home data={data} hidden={hidden} setHidden={setHidden} balance={balance} unreadCount={unreadNotifications} open={setSheet} navigate={navigate} />}
         {view === 'transactions' && <Transactions data={data} onBack={back} onSelect={(transaction) => setSheet({ type: 'transaction', transaction })} onAdd={() => setSheet({ type: 'expense' })} />}
-        {view === 'premium' && <Premium onBack={back} />}
+        {view === 'premium' && <Premium
+          onBack={back}
+          onOpenAssistant={() => navigate('assistant')}
+          subscriptionsTotal={categoryTotals(data.transactions, data.categories).find((c) => c.name === 'Assinaturas')?.value || 0}
+        />}
         {view === 'cards' && <Wallet data={data} onBack={back} open={setSheet} />}
-        {view === 'goals' && <Goals data={data} onBack={back} open={setSheet} navigate={navigate} />}
+        {view === 'goals' && <Goals data={data} onBack={back} open={setSheet} />}
         {view === 'settings' && <Settings
           profile={data.profile}
           hideOnOpen={data.hideOnOpen}
@@ -394,22 +588,65 @@ export default function App() {
             if (userId) sync(updateProfileDb(userId, { name: profile.name, email: profile.email }))
             setToast('Seus dados foram atualizados.')
           }}
+          onUploadAvatar={async (blob, dataUrl) => {
+            let nextUrl = dataUrl
+            if (userId && supabase) {
+              try {
+                nextUrl = await uploadAvatarDb(userId, blob)
+              } catch (err) {
+                console.error('[Flux avatar upload]', err)
+              }
+            }
+            setData((current) => ({ ...current, profile: { ...current.profile, avatarUrl: nextUrl } }))
+            setToast('Foto de perfil atualizada.')
+          }}
+          onRemoveAvatar={async () => {
+            if (userId && supabase) sync(removeAvatarDb(userId))
+            setData((current) => ({ ...current, profile: { ...current.profile, avatarUrl: undefined } }))
+            setToast('Foto de perfil removida.')
+          }}
           onToggleBalance={() => {
             const nextHide = !data.hideOnOpen
             setData((current) => ({ ...current, hideOnOpen: nextHide }))
             setHidden(nextHide)
             if (userId) sync(updateProfileDb(userId, { hide_on_open: nextHide }))
           }}
+          onOpenSupport={() => navigate('support')}
+          onOpenNotifications={() => navigate('notifications')}
+          onReplayOnboarding={() => setShowOnboarding(true)}
           onLogout={() => setSheet({ type: 'logout', fromSettings: true })}
           onDeleteAccount={() => setSheet({ type: 'deleteAccount' })}
+        />}
+        {view === 'notifications' && <Notifications
+          data={data}
+          balance={balance}
+          prefs={notificationPrefs}
+          readIds={readNotificationIds}
+          dismissedIds={dismissedNotificationIds}
+          onChangeReadIds={(next) => {
+            setReadNotificationIds(next)
+            saveReadIds(next)
+          }}
+          onChangeDismissedIds={(next) => {
+            setDismissedNotificationIds(next)
+            saveDismissedIds(next)
+            setToast('Notificações atualizadas.')
+          }}
+          onChangePrefs={(next) => {
+            setNotificationPrefs(next)
+            saveNotificationPrefs(next)
+            setToast('Preferências de notificação atualizadas.')
+          }}
+          onBack={back}
         />}
         <Suspense fallback={<div className="panel" role="status">Preparando sua tela…</div>}>
           {view === 'invoice' && <Invoice cards={data.cards} categories={data.categories} batches={data.invoiceBatches} transactions={data.transactions} onBack={back} onConfirm={importItems} onDeleteBatch={(batch, activeCount) => setSheet({ type: 'deleteBatch', batch, activeCount })} />}
           {view === 'assistant' && <Assistant data={data} onBack={back} />}
+          {view === 'support' && <Support profile={data.profile} onBack={back} />}
         </Suspense>
         <footer className="app-footer"><span>flux</span>Entenda seu dinheiro. Cuide do seu fluxo.</footer>
       </div>
-      {!sheet && <BottomNavigation view={view} profileName={data.profile.name} onOpenAccount={() => setSheet({ type: 'account' })} onAdd={() => setSheet({ type: 'expense' })} onNavigate={(next) => {
+      {!sheet && <BottomNavigation view={view} profileName={data.profile.name} avatarUrl={data.profile.avatarUrl} unreadNotifications={unreadNotifications} onOpenAccount={() => setSheet({ type: 'account' })} onAdd={() => setSheet({ type: 'expense' })} onNavigate={(next) => {
         if (next === view) return
         setHistory((current) => next === 'premium' ? [...current, next] : next === 'home' ? ['home'] : ['home', next])
       }} />}
@@ -463,9 +700,19 @@ export default function App() {
         {sheet.type === 'save' && <SaveForm goal={sheet.goal} balance={balance} onSave={(amount) => {
           const targetGoal = sheet.goal
           const nextCash = cents(data.cashAdjustment - amount)
-          setData((current) => ({ ...current, cashAdjustment: nextCash, goals: current.goals.map((goal) => goal.id === targetGoal.id ? { ...goal, saved: cents(goal.saved + amount) } : goal) }))
+          const nextSaved = cents(targetGoal.saved + amount)
+          setData((current) => ({ ...current, cashAdjustment: nextCash, goals: current.goals.map((goal) => goal.id === targetGoal.id ? { ...goal, saved: nextSaved } : goal) }))
           if (userId) sync(saveToGoalDb(userId, targetGoal, amount, nextCash))
-          saved(`${money(amount)} guardados em ${targetGoal.name}.`)
+          if (nextSaved >= targetGoal.target) {
+            setSheet({
+              type: 'success',
+              title: 'Meta conquistada!',
+              message: `Você alcançou 100% da meta "${targetGoal.name}" com ${money(targetGoal.target)}. Parabéns!`,
+              actionLabel: 'Continuar',
+            })
+          } else {
+            saved(`${money(amount)} guardados em ${targetGoal.name}.`)
+          }
         }} />}
         {sheet.type === 'budget' && <BudgetForm
           name={sheet.category || 'seu mês'}
@@ -504,7 +751,7 @@ export default function App() {
           <div>
             <span>Tipo<b>{isIncome(sheet.transaction) ? 'Receita' : 'Gasto'}</b></span>
             <span>Categoria<b>{sheet.transaction.category}</b></span>
-            {!isIncome(sheet.transaction) && <span>Pagamento<b>{data.cards.find((card) => card.id === sheet.transaction.cardId)?.name || 'Dinheiro / Pix'}</b></span>}
+            {!isIncome(sheet.transaction) && <span>Pagamento<b>{paymentLabel(sheet.transaction, data.cards)}</b></span>}
             <span>Data<b>{prettyDate(sheet.transaction.date)}</b></span>
           </div>
           <div className="detail-actions"><button onClick={() => setSheet({ type: 'expense', transaction: sheet.transaction })}><Icon name="edit" />Editar</button><button onClick={() => setSheet({ type: 'delete', transaction: sheet.transaction })}><Icon name="trash" />Apagar</button></div>
@@ -517,7 +764,9 @@ export default function App() {
           saved(isIncome(tx) ? 'Receita apagada. Saldo atualizado.' : 'Compra apagada. Valores atualizados.')
         }}>Sim, apagar</button><button className="secondary-button" onClick={() => setSheet({ type: 'transaction', transaction: sheet.transaction })}>Manter</button></div>}
         {sheet.type === 'account' && <div className="account-sheet">
-          <button className="account-person account-settings-link" onClick={() => { close(); navigate('settings') }} aria-label="Configurações do app e da conta"><span className="account-avatar"><img src="/profile-photo.png" alt="" /></span><span className="account-settings-copy"><strong>{data.profile.name}{data.profile.role === 'admin' ? ' · Admin' : ''}</strong><span>{data.profile.email}</span><small>Configurações do app e da conta</small></span><Icon name="chevron" size={18} /></button>
+          <button className="account-person account-settings-link" onClick={() => { close(); navigate('settings') }} aria-label="Configurações do app e da conta"><span className="account-avatar"><Avatar name={data.profile.name} src={data.profile.avatarUrl} /></span><span className="account-settings-copy"><strong>{data.profile.name}{data.profile.role === 'admin' ? ' · Admin' : ''}</strong><span>{data.profile.email}</span><small>Configurações do app e da conta</small></span><Icon name="chevron" size={18} /></button>
+          <button className="account-link-row" onClick={() => { close(); navigate('notifications') }}><span>Notificações {unreadNotifications > 0 ? `(${unreadNotifications})` : ''}</span><Icon name="chevron" size={18} /></button>
+          <button className="account-link-row" onClick={() => { close(); navigate('support') }}><span>Ajuda e Fale Conosco</span><Icon name="chevron" size={18} /></button>
           <button role="switch" aria-checked={data.hideOnOpen} onClick={() => {
             const nextHide = !data.hideOnOpen
             setData((current) => ({ ...current, hideOnOpen: nextHide }))
@@ -544,9 +793,20 @@ export default function App() {
           if (uid) sync(deleteAccountDataDb(uid))
           setData(initialData()); close(); setAuthMode('login'); setAuthenticated(false); setUserId(null); setHistory(['home']); setToast('Conta e dados excluídos.')
         }}>Sim, excluir conta e dados</button><button className="secondary-button" onClick={close}>Manter minha conta</button></div>}
+        {sheet.type === 'success' && <SuccessState
+          title={sheet.title}
+          description={sheet.message}
+          actionLabel={sheet.actionLabel || 'Continuar'}
+          onAction={() => {
+            const goHome = sheet.goHome
+            close()
+            if (goHome) setHistory(['home'])
+          }}
+        />}
       </Sheet>}
     </>}
+    {transitioning && <AccessTransition />}
     {storageError && <div className="storage-warning" role="alert">O navegador bloqueou o armazenamento. As alterações duram apenas enquanto o app estiver aberto.</div>}
-    {toast && <div className="toast" role="status"><Icon name="check" />{toast}</div>}
+    {toast && <Toast message={toast.message} tone={toast.tone} onClose={() => setToastState(null)} />}
   </main>
 }
