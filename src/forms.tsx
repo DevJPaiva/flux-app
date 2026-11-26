@@ -1,5 +1,9 @@
 import { useState, type FormEvent } from 'react'
-import { CATEGORY_NAMES, INCOME_CATEGORIES, cents, isIncome, money, numberValue, today, type Card, type Goal, type Transaction, type TransactionType } from './finance'
+import {
+  CATEGORY_NAMES, INCOME_CATEGORIES, PAYMENT_METHOD_LABELS, cents, isDebitCard, isIncome,
+  money, numberValue, resolvePaymentMethod, today,
+  type Card, type CardType, type Goal, type PaymentMethod, type Transaction, type TransactionType,
+} from './finance'
 import { Icon } from './ui'
 
 const get = (data: FormData, key: string) => String(data.get(key) || '').trim()
@@ -20,12 +24,31 @@ export function ExpenseForm({
   onSave: (transaction: Transaction) => void
 }) {
   const [type, setType] = useState<TransactionType>(transaction ? (isIncome(transaction) ? 'income' : 'expense') : (initialType || 'expense'))
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>(() =>
+    transaction && !isIncome(transaction) ? resolvePaymentMethod(transaction, cards) : 'pix',
+  )
+  const [cardId, setCardId] = useState<string>(() => transaction?.cardId || '')
   const [error, setError] = useState('')
   const income = type === 'income'
   const categoryOptions = income ? INCOME_CATEGORIES : categories
   const defaultCategory = transaction && ((income && isIncome(transaction)) || (!income && !isIncome(transaction)))
     ? transaction.category
     : (income ? INCOME_CATEGORIES[0] : (categories.includes('Alimentação') ? 'Alimentação' : categories[0]))
+
+  const matchingCards = cards.filter((c) => (paymentMethod === 'debit' ? isDebitCard(c) : !isDebitCard(c)))
+  const showCardSelect = !income && (paymentMethod === 'credit' || paymentMethod === 'debit')
+
+  const handleMethodChange = (next: PaymentMethod) => {
+    setPaymentMethod(next)
+    if (next === 'pix' || next === 'cash') {
+      setCardId('')
+      return
+    }
+    const candidates = cards.filter((c) => (next === 'debit' ? isDebitCard(c) : !isDebitCard(c)))
+    if (!candidates.some((c) => c.id === cardId)) {
+      setCardId(candidates[0]?.id || '')
+    }
+  }
 
   const save = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -38,11 +61,12 @@ export function ExpenseForm({
       ...transaction,
       id: transaction?.id || crypto.randomUUID(),
       type,
+      paymentMethod: income ? undefined : paymentMethod,
       amount,
       name: get(fields, 'name'),
       date: get(fields, 'date'),
       category: get(fields, 'category'),
-      cardId: income ? '' : get(fields, 'cardId'),
+      cardId: income || paymentMethod === 'pix' || paymentMethod === 'cash' ? '' : cardId,
     })
   }
   return <form className="form" onSubmit={save}>
@@ -54,8 +78,26 @@ export function ExpenseForm({
     <label><span>{income ? 'Descrição da receita' : 'Nome da compra'}</span><input name="name" defaultValue={transaction?.name} placeholder={income ? 'Ex.: Salário ou Freelance' : 'Ex.: Mercado'} required maxLength={70} /></label>
     <div className={income ? undefined : 'field-grid'}>
       <label><span>Categoria</span><select key={type} name="category" aria-label="Categoria" defaultValue={defaultCategory}>{categoryOptions.map((name) => <option key={name}>{name}</option>)}</select></label>
-      {!income && <label><span>Pagamento</span><select name="cardId" aria-label="Pagamento" defaultValue={transaction?.cardId || ''}><option value="">Dinheiro / Pix</option>{cards.map((card) => <option key={card.id} value={card.id}>{card.name} •• {card.end}</option>)}</select></label>}
+      {!income && (
+        <label>
+          <span>Forma de pagamento</span>
+          <select name="paymentMethod" aria-label="Forma de pagamento" value={paymentMethod} onChange={(e) => handleMethodChange(e.target.value as PaymentMethod)}>
+            {(['pix', 'cash', 'debit', 'credit'] as PaymentMethod[]).map((method) => (
+              <option key={method} value={method}>{PAYMENT_METHOD_LABELS[method]}</option>
+            ))}
+          </select>
+        </label>
+      )}
     </div>
+    {showCardSelect && (
+      <label>
+        <span>{paymentMethod === 'debit' ? 'Cartão de débito' : 'Cartão de crédito'}</span>
+        <select name="cardId" aria-label="Cartão" value={cardId} onChange={(e) => setCardId(e.target.value)}>
+          <option value="">{paymentMethod === 'debit' ? 'Débito (sem cartão cadastrado)' : 'Crédito (sem cartão cadastrado)'}</option>
+          {matchingCards.map((card) => <option key={card.id} value={card.id}>{card.name} •• {card.end}</option>)}
+        </select>
+      </label>
+    )}
     <label><span>{income ? 'Data da receita' : 'Data da compra'}</span><input type="date" name="date" defaultValue={transaction?.date || today()} max={today()} required /></label>
     <FormError text={error} />
     <button className="primary-button">Salvar {transaction ? 'alterações' : income ? 'receita' : 'gasto'}<Icon name="check" /></button>
@@ -75,20 +117,59 @@ export function BalanceForm({ value, onSave }: { value: number; onSave: (value: 
   </form>
 }
 export function CardForm({ card, onSave, onDelete }: { card?: Card; onSave: (card: Card) => void; onDelete?: () => void }) {
+  const [cardType, setCardType] = useState<CardType>(() => (card && isDebitCard(card) ? 'debit' : 'credit'))
   const [error, setError] = useState('')
+  const debit = cardType === 'debit'
   const save = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    const fields = new FormData(event.currentTarget), limit = cents(numberValue(get(fields, 'limit'))), bill = cents(numberValue(get(fields, 'bill')))
+    const fields = new FormData(event.currentTarget)
     if (!/^\d{4}$/.test(get(fields, 'end'))) return setError('O final precisa ter exatamente 4 números.')
+    if (debit) {
+      onSave({
+        id: card?.id || crypto.randomUUID(),
+        type: 'debit',
+        name: get(fields, 'name'),
+        end: get(fields, 'end'),
+        limit: 0,
+        bill: 0,
+        due: 1,
+        tone: get(fields, 'tone') as Card['tone'],
+      })
+      return
+    }
+    const limit = cents(numberValue(get(fields, 'limit'))), bill = cents(numberValue(get(fields, 'bill')))
     if (!validAmount(limit)) return setError('Informe um limite maior que zero.')
     if (!Number.isFinite(bill) || bill < 0 || bill > 1e9) return setError('Informe uma fatura válida, a partir de zero.')
-    onSave({ id: card?.id || crypto.randomUUID(), name: get(fields, 'name'), end: get(fields, 'end'), limit, bill, due: Number(get(fields, 'due')), tone: get(fields, 'tone') as Card['tone'] })
+    onSave({
+      id: card?.id || crypto.randomUUID(),
+      type: 'credit',
+      name: get(fields, 'name'),
+      end: get(fields, 'end'),
+      limit,
+      bill,
+      due: Number(get(fields, 'due')),
+      tone: get(fields, 'tone') as Card['tone'],
+    })
   }
   return <form className="form" onSubmit={save}>
-    <p className="helper-text">Registre os dados manualmente. Não precisamos do número completo nem do código de segurança.</p>
-    <label><span>Apelido</span><input name="name" defaultValue={card?.name} placeholder="Ex.: Principal" required maxLength={24} /></label>
-    <div className="field-grid"><label><span>Últimos 4 dígitos</span><input name="end" defaultValue={card?.end} inputMode="numeric" pattern="[0-9]{4}" maxLength={4} placeholder="0000" required /></label><label><span>Vence em quantos dias?</span><input type="number" name="due" defaultValue={card?.due ?? 8} min={1} max={31} required /></label></div>
-    <div className="field-grid"><label><span>Limite total (R$)</span><input name="limit" defaultValue={card?.limit} inputMode="decimal" placeholder="3.000,00" required /></label><label><span>Fatura atual (R$)</span><input name="bill" defaultValue={card?.bill ?? 0} inputMode="decimal" required /></label></div>
+    <div className="type-toggle" role="group" aria-label="Tipo de cartão">
+      <button type="button" aria-pressed={!debit} onClick={() => { setCardType('credit'); setError('') }}>Crédito</button>
+      <button type="button" aria-pressed={debit} onClick={() => { setCardType('debit'); setError('') }}>Débito</button>
+    </div>
+    <p className="helper-text">
+      {debit
+        ? 'Cartões de débito não possuem fatura nem limite de crédito: seus gastos abatem direto do saldo.'
+        : 'Registre os dados manualmente. Não precisamos do número completo nem do código de segurança.'}
+    </p>
+    <label><span>Apelido</span><input name="name" defaultValue={card?.name} placeholder={debit ? 'Ex.: Conta corrente' : 'Ex.: Principal'} required maxLength={24} /></label>
+    {debit ? (
+      <label><span>Últimos 4 dígitos</span><input name="end" defaultValue={card?.end} inputMode="numeric" pattern="[0-9]{4}" maxLength={4} placeholder="0000" required /></label>
+    ) : (
+      <>
+        <div className="field-grid"><label><span>Últimos 4 dígitos</span><input name="end" defaultValue={card?.end} inputMode="numeric" pattern="[0-9]{4}" maxLength={4} placeholder="0000" required /></label><label><span>Vence em quantos dias?</span><input type="number" name="due" defaultValue={card?.due ?? 8} min={1} max={31} required /></label></div>
+        <div className="field-grid"><label><span>Limite total (R$)</span><input name="limit" defaultValue={card?.limit || ''} inputMode="decimal" placeholder="3.000,00" required /></label><label><span>Fatura atual (R$)</span><input name="bill" defaultValue={card?.bill ?? 0} inputMode="decimal" required /></label></div>
+      </>
+    )}
     <label><span>Cor do cartão</span><select name="tone" aria-label="Cor do cartão" defaultValue={card?.tone || 'gradient'}><option value="gradient">Degradê Flux</option><option value="lilac">Azul-petróleo</option><option value="white">Off-white</option></select></label>
     <FormError text={error} />
     <button className="primary-button">Salvar {card ? 'alterações' : 'cartão'}<Icon name="check" /></button>

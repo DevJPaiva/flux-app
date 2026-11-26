@@ -1,8 +1,10 @@
-export type View = 'home' | 'transactions' | 'cards' | 'goals' | 'invoice' | 'assistant' | 'settings' | 'premium'
-export type IconName = 'plus' | 'card' | 'target' | 'file' | 'eye' | 'eyeOff' | 'home' | 'arrow' | 'close' | 'market' | 'repeat' | 'car' | 'wallet' | 'spark' | 'trash' | 'edit' | 'chevron' | 'send' | 'camera' | 'upload' | 'calendar' | 'check' | 'moon' | 'sun' | 'monitor'
+export type View = 'home' | 'transactions' | 'cards' | 'goals' | 'invoice' | 'assistant' | 'settings' | 'premium' | 'support' | 'notifications'
+export type IconName = 'plus' | 'card' | 'target' | 'file' | 'eye' | 'eyeOff' | 'home' | 'arrow' | 'close' | 'market' | 'repeat' | 'car' | 'wallet' | 'spark' | 'trash' | 'edit' | 'chevron' | 'send' | 'camera' | 'upload' | 'calendar' | 'check' | 'moon' | 'sun' | 'monitor' | 'bell' | 'tune'
 export type TransactionType = 'expense' | 'income'
-export type Transaction = { id: string; type?: TransactionType; name: string; category: string; cardId: string; date: string; amount: number; batch?: string }
-export type Card = { id: string; name: string; end: string; bill: number; limit: number; due: number; tone: 'white' | 'lilac' | 'gradient' }
+export type PaymentMethod = 'credit' | 'debit' | 'pix' | 'cash'
+export type CardType = 'credit' | 'debit'
+export type Transaction = { id: string; type?: TransactionType; paymentMethod?: PaymentMethod; name: string; category: string; cardId: string; date: string; amount: number; batch?: string }
+export type Card = { id: string; type?: CardType; name: string; end: string; bill: number; limit: number; due: number; tone: 'white' | 'lilac' | 'gradient' }
 export type Goal = { id: string; name: string; saved: number; target: number; date: string }
 export type InvoiceBatch = { id: string; fileName: string; cardId: string; createdAt: string; itemsCount: number; total: number }
 export type Theme = 'dark' | 'light' | 'system'
@@ -10,12 +12,35 @@ export type UserRole = 'user' | 'admin'
 export type FinanceData = {
   transactions: Transaction[]; cards: Card[]; goals: Goal[]; categories: string[]
   budget: number; limits: Record<string, number>; initialBalance: number; cashAdjustment: number
-  hideOnOpen: boolean; theme: Theme; profile: { name: string; email: string; role?: UserRole }; importedBatches: string[]; invoiceBatches: InvoiceBatch[]
+  hideOnOpen: boolean; theme: Theme; profile: { name: string; email: string; avatarUrl?: string; role?: UserRole }; importedBatches: string[]; invoiceBatches: InvoiceBatch[]
 }
 export const CATEGORY_NAMES = ['Moradia', 'Alimentação', 'Transporte', 'Lazer', 'Assinaturas', 'Outros']
 export const INCOME_CATEGORIES = ['Salário', 'Freelance', 'Rendimentos', 'Reembolso', 'Outros']
 export const COLORS = ['lime', 'lilac', 'white', 'muted', 'lilac', 'muted']
 export const isIncome = (transaction: Pick<Transaction, 'type'>) => transaction.type === 'income'
+export const isDebitCard = (card: Pick<Card, 'type'>) => card.type === 'debit'
+export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
+  pix: 'Pix',
+  cash: 'Dinheiro',
+  debit: 'Cartão de Débito',
+  credit: 'Cartão de Crédito',
+}
+export function resolvePaymentMethod(tx: Pick<Transaction, 'paymentMethod' | 'cardId'>, cards: Card[] = []): PaymentMethod {
+  if (tx.paymentMethod) return tx.paymentMethod
+  if (tx.cardId) {
+    const card = cards.find((c) => c.id === tx.cardId)
+    return card && isDebitCard(card) ? 'debit' : 'credit'
+  }
+  return 'pix'
+}
+export function paymentLabel(tx: Pick<Transaction, 'type' | 'paymentMethod' | 'cardId'>, cards: Card[]): string {
+  if (isIncome(tx)) return 'Receita'
+  if (tx.cardId) {
+    const card = cards.find((c) => c.id === tx.cardId)
+    if (card) return `${card.name} (${isDebitCard(card) ? 'Débito' : 'Crédito'})`
+  }
+  return PAYMENT_METHOD_LABELS[resolvePaymentMethod(tx, cards)]
+}
 export const isCustomCategory = (name: string) => !CATEGORY_NAMES.includes(name)
 export const money = (value: number) => value.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL', minimumFractionDigits: Number.isInteger(value) ? 0 : 2, maximumFractionDigits: 2 })
 export const cents = (value: number) => Math.round(value * 100) / 100
@@ -114,27 +139,32 @@ export function readData(): FinanceData {
 }
 
 export function upsertExpense(data: FinanceData, transaction: Transaction): FinanceData {
-  const normalized: Transaction = isIncome(transaction) ? { ...transaction, cardId: '' } : transaction
+  const normalized: Transaction = isIncome(transaction)
+    ? { ...transaction, cardId: '', paymentMethod: undefined }
+    : { ...transaction, paymentMethod: resolvePaymentMethod(transaction, data.cards) }
   const old = data.transactions.find((t) => t.id === normalized.id)
   return {
     ...data,
     transactions: old ? data.transactions.map((t) => t.id === normalized.id ? normalized : t) : [normalized, ...data.transactions],
-    cards: data.cards.map((card) => ({
-      ...card,
-      bill: cents(Math.max(
-        0,
-        card.bill
-        - (old && !isIncome(old) && old.cardId === card.id ? old.amount : 0)
-        + (!isIncome(normalized) && normalized.cardId === card.id ? normalized.amount : 0),
-      )),
-    })),
+    cards: data.cards.map((card) => {
+      if (isDebitCard(card)) return card
+      return {
+        ...card,
+        bill: cents(Math.max(
+          0,
+          card.bill
+          - (old && !isIncome(old) && old.cardId === card.id ? old.amount : 0)
+          + (!isIncome(normalized) && normalized.cardId === card.id ? normalized.amount : 0),
+        )),
+      }
+    }),
   }
 }
 export function removeExpense(data: FinanceData, transaction: Transaction): FinanceData {
   return {
     ...data,
     transactions: data.transactions.filter((t) => t.id !== transaction.id),
-    cards: data.cards.map((card) => ({
+    cards: data.cards.map((card) => isDebitCard(card) ? card : ({
       ...card,
       bill: cents(Math.max(0, card.bill - (!isIncome(transaction) && transaction.cardId === card.id ? transaction.amount : 0))),
     })),

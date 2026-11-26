@@ -1,6 +1,15 @@
+import { money } from './finance'
 import { Icon, PageHeader } from './ui'
 
-export default function Premium({ onBack }: { onBack: () => void }) {
+export default function Premium({
+  onBack,
+  onOpenAssistant,
+  subscriptionsTotal = 0,
+}: {
+  onBack: () => void
+  onOpenAssistant?: () => void
+  subscriptionsTotal?: number
+}) {
   return <div className="view-page premium-page">
     <PageHeader title="Flux Plus" onBack={onBack} />
     <section className="premium-hero" aria-labelledby="premium-title">
@@ -21,5 +30,20 @@ export default function Premium({ onBack }: { onBack: () => void }) {
       </div>
       <div className="premium-hero-bottom"><p>Seu dinheiro continua nas suas mãos.<br /><strong>O Plus vem para simplificar o caminho.</strong></p><button className="premium-back" onClick={onBack}>Continuar no flux<Icon name="arrow" size={18} /></button></div>
     </section>
+    {onOpenAssistant && (
+      <div className="premium-assistant-wrap">
+        <button className="assistant-card" onClick={onOpenAssistant}>
+          <div>
+            <span className="eyebrow dark">ASSISTENTE FLUX</span>
+            <strong>
+              {subscriptionsTotal > 0
+                ? `Você registrou ${money(subscriptionsTotal)} em assinaturas. Vamos olhar de perto?`
+                : 'Seus planos começam com clareza. Vamos olhar seus números?'}
+            </strong>
+          </div>
+          <span className="round-arrow"><Icon name="arrow" /></span>
+        </button>
+      </div>
+    )}
   </div>
 }

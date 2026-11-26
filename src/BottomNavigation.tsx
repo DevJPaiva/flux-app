@@ -1,5 +1,5 @@
 import type { IconName, View } from './finance'
-import { Brand, Icon } from './ui'
+import { Avatar, Brand, Icon } from './ui'
 
 type MainView = Extract<View, 'home' | 'transactions' | 'goals' | 'premium'>
 
@@ -14,12 +14,16 @@ export default function BottomNavigation({
   onNavigate,
   onAdd,
   profileName = 'Lucas',
+  avatarUrl,
+  unreadNotifications = 0,
   onOpenAccount,
 }: {
   view: View
   onNavigate: (view: MainView) => void
   onAdd: () => void
   profileName?: string
+  avatarUrl?: string
+  unreadNotifications?: number
   onOpenAccount?: () => void
 }) {
   const firstName = profileName.trim().split(/\s+/)[0] || 'Lucas'
@@ -46,9 +50,12 @@ export default function BottomNavigation({
         })}
         <button className="bottom-navigation-item bottom-navigation-premium" type="button" data-active={view === 'premium'} aria-current={view === 'premium' ? 'page' : undefined} aria-label="Conhecer o Flux Plus" title="Flux Plus" onClick={() => onNavigate('premium')}><span className="bottom-navigation-icon"><Icon name="spark" /><span className="bottom-navigation-premium-badge">PLUS</span></span><span>IA</span></button>
       </div>
-      <button className="desktop-nav-profile" type="button" onClick={onOpenAccount} aria-label="Abrir conta">
+      <button className="desktop-nav-profile" type="button" onClick={onOpenAccount} aria-label={unreadNotifications > 0 ? `Abrir conta (${unreadNotifications} notificações não lidas)` : 'Abrir conta'}>
         <span className="desktop-nav-greeting"><span>Olá,</span><strong>{firstName}</strong></span>
-        <span className="avatar desktop-nav-avatar"><img src="/profile-photo.png" alt="" /></span>
+        <span className="avatar desktop-nav-avatar">
+          <Avatar name={profileName} src={avatarUrl} />
+          {unreadNotifications > 0 && <span className="avatar-notification-dot" aria-hidden="true" />}
+        </span>
       </button>
     </div>
   </nav>

@@ -44,6 +44,7 @@ export async function loadUserFinanceData(userId: string): Promise<FinanceData> 
 
   const cards: Card[] = (cardsRes.data || []).map((c) => ({
     id: String(c.id),
+    type: c.card_type === 'debit' ? 'debit' : 'credit',
     name: String(c.name),
     end: String(c.last4).trim(),
     bill: num(c.bill_amount),
@@ -64,6 +65,9 @@ export async function loadUserFinanceData(userId: string): Promise<FinanceData> 
   const transactions: Transaction[] = (txRes.data || []).map((t) => ({
     id: String(t.id),
     type: t.type === 'income' ? 'income' : 'expense',
+    paymentMethod: t.payment_method === 'credit' || t.payment_method === 'debit' || t.payment_method === 'pix' || t.payment_method === 'cash'
+      ? t.payment_method
+      : undefined,
     name: String(t.name),
     category: String(t.category),
     cardId: t.card_id ? String(t.card_id) : '',
@@ -96,6 +100,7 @@ export async function loadUserFinanceData(userId: string): Promise<FinanceData> 
     profile: {
       name: String(profileRow?.name || 'Usuário'),
       email: String(profileRow?.email || ''),
+      avatarUrl: profileRow?.avatar_url ? String(profileRow.avatar_url) : undefined,
       role: profileRow?.role === 'admin' ? 'admin' : 'user',
     },
     importedBatches: invoiceBatches.map((b) => b.id),
@@ -108,6 +113,7 @@ export async function updateProfileDb(
   patch: Partial<{
     name: string
     email: string
+    avatar_url: string | null
     initial_balance: number
     cash_adjustment: number
     monthly_budget: number
@@ -139,6 +145,7 @@ export async function upsertTransactionDb(userId: string, tx: Transaction, updat
     card_id: income ? null : (tx.cardId || null),
     batch_id: tx.batch || null,
     type: income ? 'income' : 'expense',
+    payment_method: income ? null : (tx.paymentMethod || (tx.cardId ? 'credit' : 'pix')),
     name: tx.name,
     category: tx.category,
     amount: tx.amount,
@@ -160,10 +167,11 @@ export async function upsertCardDb(userId: string, card: Card) {
   const { error } = await supabase.from('cards').upsert({
     id: card.id,
     user_id: userId,
+    card_type: card.type === 'debit' ? 'debit' : 'credit',
     name: card.name,
     last4: card.end,
     bill_amount: card.bill,
-    credit_limit: card.limit,
+    credit_limit: card.type === 'debit' ? 0 : card.limit,
     due_day: card.due,
     tone: card.tone,
   })
@@ -307,6 +315,25 @@ export async function deleteInvoiceBatchDb(userId: string, batchId: string, upda
     await supabase.storage.from('invoices').remove([batchRow.storage_path])
   }
   await syncCardBills(userId, updatedCards)
+}
+
+export async function uploadAvatarDb(userId: string, blob: Blob): Promise<string> {
+  if (!supabase) throw new Error('Supabase não configurado.')
+  const path = `${userId}/avatar.jpg`
+  const { error: uploadErr } = await supabase.storage
+    .from('avatars')
+    .upload(path, blob, { upsert: true, contentType: 'image/jpeg' })
+  if (uploadErr) throw uploadErr
+  const { data } = supabase.storage.from('avatars').getPublicUrl(path)
+  const publicUrl = `${data.publicUrl}?t=${Date.now()}`
+  await updateProfileDb(userId, { avatar_url: publicUrl })
+  return publicUrl
+}
+
+export async function removeAvatarDb(userId: string) {
+  if (!supabase) return
+  await supabase.storage.from('avatars').remove([`${userId}/avatar.jpg`])
+  await updateProfileDb(userId, { avatar_url: null })
 }
 
 export async function deleteAccountDataDb(userId: string) {

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { INCOME_CATEGORIES, categoryIcon, cents, isIncome, money, prettyDate, type FinanceData, type Transaction } from './finance'
+import { INCOME_CATEGORIES, categoryIcon, cents, isDebitCard, isIncome, money, paymentLabel, prettyDate, type FinanceData, type Transaction } from './finance'
 import { defaultFilters, filterTransactions, type TransactionFilters } from './transaction-analysis'
 import { Empty, Icon, PageHeader } from './ui'
 
@@ -24,12 +24,11 @@ export default function Transactions({ data, onBack, onSelect, onAdd }: {
   const activeCount = Number(Boolean(filters.search)) + Number(filters.period !== 'all') + Number(Boolean(filters.category)) + Number(filters.cardId !== 'all')
   const invalidDates = filters.period === 'custom' && filters.start && filters.end && filters.start > filters.end
   const sortedByDate = filters.sort === 'newest' || filters.sort === 'oldest'
-  const cardName = (id: string) => data.cards.find((card) => card.id === id)?.name || 'Dinheiro / Pix'
   const row = (item: Transaction) => {
     const income = isIncome(item)
     return <button className="transaction-row analysis-transaction-row" key={item.id} onClick={() => onSelect(item)}>
       <span className={`row-icon${income ? ' income' : ''}`}><Icon name={income ? 'wallet' : categoryIcon(item.category)} /></span>
-      <span className="transaction-copy"><strong>{item.name}</strong><small>{item.category} · {income ? 'Receita' : cardName(item.cardId)}{!sortedByDate && ` · ${prettyDate(item.date)}`}</small></span>
+      <span className="transaction-copy"><strong>{item.name}</strong><small>{item.category} · {paymentLabel(item, data.cards)}{!sortedByDate && ` · ${prettyDate(item.date)}`}</small></span>
       <strong className={`transaction-value${income ? ' income' : ''}`}>{income ? '+' : '−'} {money(item.amount)}</strong><Icon name="chevron" size={16} />
     </button>
   }
@@ -56,7 +55,7 @@ export default function Transactions({ data, onBack, onSelect, onAdd }: {
       <div className="compact-search-row">
         <label><span className="sr-only">Buscar compra</span><input className="compact-search-input" type="search" value={filters.search} onChange={(event) => update({ search: event.target.value })} placeholder="Buscar nome ou categoria" /></label>
         <button className="compact-filter-button" type="button" aria-label="Abrir filtros de transações" aria-haspopup="dialog" aria-controls="transaction-filter-dialog" data-active={activeCount > Number(Boolean(filters.search))} onClick={(event) => event.currentTarget.closest('section')?.querySelector('dialog')?.showModal()}>
-          <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 7h9m4 0h3M4 17h3m4 0h9" /><circle cx="15" cy="7" r="2" /><circle cx="9" cy="17" r="2" /></svg>
+          <Icon name="tune" size={21} />
           {activeCount > Number(Boolean(filters.search)) && <span className="compact-filter-count" aria-hidden="true">{activeCount - Number(Boolean(filters.search))}</span>}
         </button>
       </div>
@@ -70,7 +69,7 @@ export default function Transactions({ data, onBack, onSelect, onAdd }: {
           <label><span>Período</span><select aria-label="Período" value={filters.period} onChange={(event) => update({ period: event.target.value as TransactionFilters['period'] })}><option value="all">Todo o histórico</option><option value="month">Este mês</option><option value="custom">Escolher datas</option></select></label>
           {filters.period === 'custom' && <div className="filter-dialog-dates"><label><span>De</span><input type="date" value={filters.start} max={filters.end || undefined} onChange={(event) => update({ start: event.target.value })} /></label><label><span>Até</span><input type="date" value={filters.end} min={filters.start || undefined} onChange={(event) => update({ end: event.target.value })} /></label></div>}
           <label><span>Categoria</span><select aria-label="Categoria" value={filters.category} onChange={(event) => update({ category: event.target.value })}><option value="">Todas as categorias</option>{allCategories.map((category) => <option key={category}>{category}</option>)}</select></label>
-          <label><span>Pagamento</span><select aria-label="Pagamento" value={filters.cardId} onChange={(event) => update({ cardId: event.target.value })}><option value="all">Todos os pagamentos</option><option value="">Dinheiro / Pix</option>{data.cards.map((card) => <option key={card.id} value={card.id}>{card.name} •• {card.end}</option>)}</select></label>
+          <label><span>Pagamento</span><select aria-label="Pagamento" value={filters.cardId} onChange={(event) => update({ cardId: event.target.value })}><option value="all">Todos os pagamentos</option><option value="method:pix">Pix</option><option value="method:cash">Dinheiro</option><option value="method:debit">Cartão de Débito</option><option value="method:credit">Cartão de Crédito</option>{data.cards.map((card) => <option key={card.id} value={card.id}>{card.name} •• {card.end} ({isDebitCard(card) ? 'Débito' : 'Crédito'})</option>)}</select></label>
         </div>
         {invalidDates && <p className="form-error" role="alert">A data inicial precisa ser anterior ou igual à data final.</p>}
         <div className="filter-dialog-actions">
