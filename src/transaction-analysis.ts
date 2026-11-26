@@ -1,4 +1,4 @@
-import { today, type Transaction } from './finance.ts'
+import { isIncome, resolvePaymentMethod, today, type Transaction } from './finance.ts'
 
 export type TransactionFilters = {
   search: string
@@ -19,7 +19,14 @@ export function filterTransactions(transactions: Transaction[], filters: Transac
   return transactions.filter((item) => {
     if (search && !normalize(`${item.name} ${item.category}`).includes(search)) return false
     if (filters.category && item.category !== filters.category) return false
-    if (filters.cardId !== 'all' && item.cardId !== filters.cardId) return false
+    if (filters.cardId !== 'all') {
+      if (filters.cardId.startsWith('method:')) {
+        const method = filters.cardId.slice(7)
+        if (isIncome(item) || resolvePaymentMethod(item) !== method) return false
+      } else if (item.cardId !== filters.cardId) {
+        return false
+      }
+    }
     if (filters.period === 'month' && item.date.slice(0, 7) !== today().slice(0, 7)) return false
     if (filters.period === 'custom' && ((filters.start && item.date < filters.start) || (filters.end && item.date > filters.end))) return false
     return true
